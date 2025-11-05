@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <title>EAN Scanner (Mobile + Handheld) — v2</title>
+
+  <!-- ZXing UMD build -->
+  <script src="https://unpkg.com/@zxing/library@0.20.0/umd/index.min.js"></script>
+
+  <style>
+    :root { --brand: #2196F3; --ok:#4CAF50; --bad:#f44336; }
+    * { box-sizing:border-box; margin:0; padding:0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; background:#f6f7f9; color:#111; }
+    .wrap { max-width: 680px; margin: 0 auto; padding: 16px; }
+    .card { background:#fff; border-radius:14px; box-shadow:0 6px 18px rgba(0,0,0,.08); overflow:hidden; }
+    header { background:var(--brand); color:#fff; padding:20px; text-align:center; }
+    header h1 { font-size:22px; font-weight:700; }
+    header p { opacity:.95; margin-top:4px; }
+    .pad { padding:16px; }
+    .row { display:flex; gap:10px; flex-wrap: wrap; }
+    button { appearance:none; border:0; background:var(--brand); color:#fff; padding:12px 14px; border-radius:10px; font-weight:700; font-size:16px; cursor:pointer; }
+    button.secondary { background:#666; }
+    button.success { background:var(--ok); }
+    button.danger { background:var(--bad); }
+    button.icon { display:flex; align-items:center; gap:8px; }
+    button:disabled { opacity:.6; cursor:not-allowed; }
+    .note { background:#e3f2fd; border:2px solid var(--brand); color:#0b67c2; padding:12px; border-radius:10px; margin:12px 0; font-size:14px; }
+    .camera { position: relative; border-radius:12px; overflow:hidden; background:#000; margin:10px 0; display:none; }
+    .camera.active { display:block; }
+    video#preview { width:100%; height:auto; display:block; background:#000; }
+    .scan-frame { position:absolute; width:260px; height:180px; border:2px solid var(--ok); border-radius:10px; left:50%; top:50%; transform:translate(-50%,-50%); box-shadow:0 0 0 9999px rgba(0,0,0,.45); }
+    .scan-line { position:absolute; left:calc(50% - 120px); width:240px; height:2px; background:var(--ok); top:calc(50% - 60px); box-shadow:0 0 10px var(--ok); animation:scan 1.8s linear infinite; }
+    @keyframes scan { 0% { transform: translateY(0); opacity:.2;} 50% { transform: translateY(120px); opacity:1;} 100% { transform: translateY(0); opacity:.2;} }
+    input[type="text"] { flex:1; padding:12px; border:2px solid #e5e7eb; border-radius:10px; font-size:16px; }
+
+    /* Big overlay result */
+    .result { position: fixed; top: 10px; left: 50%; transform: translateX(-50%); z-index: 9999; display: none; padding: 18px 22px; border-radius: 12px; border: 3px solid var(--ok); background: #e8f5e9f0; text-align: center; box-shadow: 0 4px 12px rgba(0,0,0,0.2); opacity: 0; transition: opacity 0.3s ease-in-out; }
+    .result.show { opacity: 1; display: block; }
+    .result .label { font-size: 18px; color: #444; }
+    .result .value { font-size: 48px; font-weight: 900; color: var(--brand); margin-top: 4px; }
+    .result.error { border-color: var(--bad); background: #ffebeef0; }
+    .result.error .value { color: var(--bad); font-size: 36px; }
+
+    /* Status pill */
+    .status { margin-top:8px; font-size:12px; color:#334155; display:flex; align-items:center; gap:8px; }
+    .dot { width:10px; height:10px; border-radius:50%; background:#94a3b8; display:inline-block; }
+    .dot.ok { background: var(--ok); }
+    .dot.bad { background: var(--bad); }
+
+    /* Scanner mode */
+    .scanner-mode { display:none; margin-top: 10px; }
+    .scanner-mode.active { display:block; }
+    .scanner-box { background:#f1f5f9; border:2px dashed #94a3b8; padding:14px; border-radius:12px; }
+    .scanner-box h3 { font-size:16px; margin-bottom:8px; }
+    .scanner-input { width:100%; padding:12px; border:2px solid #cbd5e1; border-radius:10px; font-size:18px; background:#fff; letter-spacing:2px; }
+    .scanner-hint { font-size:12px; color:#64748b; margin-top:6px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <header>
+        <h1>📦 EAN Scanner</h1>
+        <p>Camera or Handheld scanner. HTTPS recommended.</p>
+      </header>
+
+      <div class="pad">
+        <div class="note">
+          <b>Tip:</b> If it suddenly stops, tap <b>Hard Reset</b> below once. This fully restarts the camera + decoder.
+        </div>
+
+        <div class="row">
+          <button id="modeCameraBtn" class="success icon">🎥 Camera Mode</button>
+          <button id="modeScannerBtn" class="secondary icon">🧰 Handheld Scanner Mode</button>
+          <button id="hardResetBtn" class="danger icon">♻️ Hard Reset</button>
+        </div>
+
+        <!-- live status -->
+        <div class="status"><span id="statDot" class="dot"></span><span id="statText">Idle</span></div>
+
+        <!-- CAMERA MODE -->
+        <div id="cameraSection">
+          <div class="row" style="margin-top:10px;">
+            <button id="startBtn" class="success icon">📹 Start Live Camera</button>
+            <button id="stopBtn" class="danger icon" disabled>⏹ Stop</button>
+            <button id="torchBtn" class="icon" disabled>🔦 Torch</button>
+            <button id="switchBtn" class="secondary icon" disabled>🔁 Switch Camera</button>
+          </div>
+
+          <div class="camera" id="cameraBox">
+            <video id="preview" autoplay playsinline muted></video>
+            <div class="scan-frame"></div>
+            <div class="scan-line"></div>
+          </div>
+
+          <div class="row" style="margin-top:10px;">
+            <input id="manual" type="text" placeholder="Enter EAN manually" inputmode="numeric" />
+            <button id="manualBtn">Lookup</button>
+          </div>
+        </div>
+
+        <!-- HANDHELD SCANNER MODE -->
+        <div id="scannerSection" class="scanner-mode">
+          <div class="scanner-box">
+            <h3>Handheld Scanner</h3>
+            <input id="scannerSink" class="scanner-input" type="text" inputmode="none" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="Focus here & scan…" />
+            <div class="scanner-hint">Most scanners send digits + Enter. We'll also detect end-of-scan by a short pause.</div>
+          </div>
+        </div>
+
+        <!-- BIG RESULT OVERLAY -->
+        <div id="out" class="result">
+          <div class="label">Location</div>
+          <div id="outValue" class="value"></div>
+          <div id="outEan" class="muted"></div>
+        </div>
+
+        <div class="status" style="margin-top:12px;">Database loaded: <span id="dbCount">0</span> EANs</div>
+      </div>
+    </div>
+  </div>
+
+  <canvas id="canvas" style="display:none;"></canvas>
+
+  <script>
+    const Hints = ZXing.DecodeHintType;
+    const Formats = ZXing.BarcodeFormat;
+    const hints = new Map();
+    hints.set(Hints.POSSIBLE_FORMATS, [Formats.EAN_13, Formats.EAN_8, Formats.UPC_A, Formats.UPC_E, Formats.CODE_128]);
+
+    // Paste your database from your working file here if needed:
+    const eanDatabase = {};
+
+    // Elements
+    const cameraSection = document.getElementById('cameraSection');
+    const scannerSection = document.getElementById('scannerSection');
+    const modeCameraBtn = document.getElementById('modeCameraBtn');
+    const modeScannerBtn = document.getElementById('modeScannerBtn');
+    const hardResetBtn = document.getElementById('hardResetBtn');
+    const cameraBox = document.getElementById('cameraBox');
+    const startBtn = document.getElementById('startBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const switchBtn = document.getElementById('switchBtn');
+    const torchBtn = document.getElementById('torchBtn');
+    const out = document.getElementById('out');
+    const outValue = document.getElementById('outValue');
+    const outEan = document.getElementById('outEan');
+    const manual = document.getElementById('manual');
+    const manualBtn = document.getElementById('manualBtn');
+    const videoEl = document.getElementById('preview');
+    const scannerSink = document.getElementById('scannerSink');
+    const statDot = document.getElementById('statDot');
+    const statText = document.getElementById('statText');
+
+    let codeReader = null;
+    let currentDeviceId = undefined;
+    let stream = null;
+    let scanning = false;
+    let lastBeepAt = 0;
+
+    function setStatus(text, ok=null) {
+      statText.textContent = text;
+      statDot.classList.remove('ok','bad');
+      if (ok === true) statDot.classList.add('ok');
+      else if (ok === false) statDot.classList.add('bad');
+    }
+
+    function ensureReader() {
+      if (!codeReader) codeReader = new ZXing.BrowserMultiFormatReader(hints);
+    }
+
+    function showResult(location, ean, isError=false) {
+      out.className = 'result show' + (isError ? ' error' : '');
+      outValue.textContent = location;
+      outEan.textContent = 'EAN: ' + ean;
+      if (!isError) beep();
+      if (scanning) setTimeout(() => { if (scanning) out.classList.remove('show'); }, 3000);
+    }
+
+    function beep() {
+      const now = Date.now();
+      if (now - lastBeepAt < 300) return;
+      lastBeepAt = now;
+      try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const o = ctx.createOscillator();
+        const g = ctx.createGain();
+        o.type = 'sine'; o.frequency.value = 880;
+        o.connect(g); g.connect(ctx.destination);
+        g.gain.setValueAtTime(0.25, ctx.currentTime);
+        g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.12);
+        o.start(); o.stop(ctx.currentTime + 0.12);
+      } catch {}
+    }
+
+    function lookupEAN(raw) {
+      const ean = String(raw || '').replace(/[\\s-]/g, '');
+      if (!ean) return;
+      if (eanDatabase[ean]) {
+        showResult(eanDatabase[ean], ean, false);
+      } else {
+        showResult('EAN not found in database', ean, true);
+      }
+      if (manual) manual.value = '';
+      if (scannerSink) { scannerSink.value = ''; setTimeout(() => scannerSink.focus(), 0); }
+    }
+
+    async function listCameras() {
+      try {
+        ensureReader();
+        const devices = await codeReader.listVideoInputDevices();
+        return devices || [];
+      } catch { return []; }
+    }
+
+    function chooseBestDevice(devices) {
+      if (!devices.length) return undefined;
+      const back = devices.find(d => /back|rear|environment/i.test(d.label));
+      return back ? back.deviceId : devices[devices.length - 1].deviceId;
+    }
+
+    async function startCamera() {
+      setStatus('Starting camera…');
+      startBtn.disabled = true;
+      try {
+        stopCamera(true);
+        ensureReader();
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
+        videoEl.srcObject = stream;
+        await videoEl.play();
+        await new Promise((res) => {
+          if (videoEl.readyState >= 2) res();
+          else videoEl.onloadeddata = () => res();
+        });
+        const devices = await listCameras();
+        currentDeviceId = chooseBestDevice(devices);
+        await startDecoding();
+        cameraBox.classList.add('active');
+        scanning = true;
+        stopBtn.disabled = false;
+        switchBtn.disabled = devices.length < 2;
+        torchBtn.disabled = !supportsTorch();
+        setStatus('Camera running', true);
+      } catch (err) {
+        alert(buildCameraErrorMessage(err));
+        setStatus('Camera error', false);
+        stopCamera();
+      } finally {
+        startBtn.disabled = false;
+      }
+    }
+
+    function supportsTorch() {
+      const track = (videoEl.srcObject && videoEl.srcObject.getVideoTracks()[0]) || null;
+      if (!track) return false;
+      const caps = track.getCapabilities ? track.getCapabilities() : {};
+      return !!caps.torch;
+    }
+
+    async function toggleTorch() {
+      const track = (videoEl.srcObject && videoEl.srcObject.getVideoTracks()[0]) || null;
+      if (!track) return;
+      try {
+        const caps = track.getCapabilities();
+        if (!caps.torch) return;
+        const settings = track.getSettings();
+        const enable = !settings.torch;
+        await track.applyConstraints({ advanced: [{ torch: enable }] });
+      } catch {}
+    }
+
+    async function startDecoding() {
+      ensureReader();
+      try { codeReader.reset(); } catch {}
+      await codeReader.decodeFromVideoDevice(currentDeviceId, 'preview', (result, err) => {
+        if (result && result.text) {
+          lookupEAN(result.text);
+        }
+      });
+    }
+
+    function buildCameraErrorMessage(err) {
+      let msg = 'Camera failed to start.\\n\\n';
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        return msg + 'This browser does not support camera access. Try Chrome/Edge on Android or Safari 15+ on iPhone.';
+      }
+      if (err && err.name === 'NotAllowedError') {
+        msg += 'Permission denied. On iPhone: Settings > Safari > Camera > Allow. Page must be HTTPS.';
+      } else if (err && err.name === 'NotFoundError') {
+        msg += 'No camera found.';
+      } else {
+        msg += (err && err.message) ? err.message : String(err || '');
+      }
+      return msg;
+    }
+
+    function stopCamera(silent=false) {
+      scanning = false;
+      try { if (codeReader) codeReader.reset(); } catch {}
+      if (stream) {
+        try { stream.getTracks().forEach(t => t.stop()); } catch {}
+        stream = null;
+      }
+      videoEl.srcObject = null;
+      cameraBox.classList.remove('active');
+      stopBtn.disabled = true;
+      switchBtn.disabled = true;
+      torchBtn.disabled = true;
+      if (!silent) setStatus('Camera stopped');
+    }
+
+    async function switchCamera() {
+      const devices = await listCameras();
+      if (devices.length < 2) return;
+      const idx = devices.findIndex(d => d.deviceId === currentDeviceId);
+      const next = devices[(idx + 1) % devices.length];
+      currentDeviceId = next.deviceId;
+      await startDecoding();
+      torchBtn.disabled = !supportsTorch();
+    }
+
+    function hardReset() {
+      setStatus('Resetting…');
+      stopCamera(true);
+      try {
+        if (codeReader) { codeReader.reset(); codeReader = null; }
+      } catch {}
+      try {
+        (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) && navigator.mediaDevices.getUserMedia({video:true})
+          .then(s => s.getTracks().forEach(t => t.stop()))
+          .catch(()=>{});
+      } catch {}
+      out.classList.remove('show');
+      if (scannerSection.classList.contains('active')) {
+        setTimeout(()=>scannerSink.focus(), 50);
+      }
+      setTimeout(()=> setStatus('Idle'), 200);
+    }
+
+    manualBtn.addEventListener('click', () => lookupEAN(manual.value.trim()));
+    manual.addEventListener('keypress', e => { if (e.key === 'Enter') { e.preventDefault(); manualBtn.click(); } });
+
+    let scannerBuffer = '';
+    let scannerTimer = null;
+    const SCAN_TIMEOUT_MS = 120;
+    function handleScannerKeydown(e) {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        const code = scannerBuffer || scannerSink.value;
+        scannerBuffer = '';
+        lookupEAN(code);
+        return;
+      }
+      if (/^[0-9\\s-]$/.test(e.key)) {
+        scannerBuffer += e.key;
+        if (scannerTimer) clearTimeout(scannerTimer);
+        scannerTimer = setTimeout(() => {
+          const code = scannerBuffer;
+          scannerBuffer = '';
+          lookupEAN(code);
+        }, SCAN_TIMEOUT_MS);
+      } else if (e.key === 'Backspace') {
+        scannerBuffer = scannerBuffer.slice(0, -1);
+      }
+    }
+
+    setInterval(() => {
+      if (scannerSection.classList.contains('active') && document.activeElement !== scannerSink) {
+        scannerSink.focus();
+      }
+    }, 1500);
+
+    function activateScannerMode() {
+      stopCamera(true);
+      cameraSection.style.display = 'none';
+      scannerSection.classList.add('active');
+      setTimeout(() => { scannerSink.focus(); }, 60);
+      scanning = true;
+      setStatus('Scanner mode ready', true);
+    }
+
+    function activateCameraMode() {
+      scannerSection.classList.remove('active');
+      cameraSection.style.display = 'block';
+      scanning = false;
+      setStatus('Camera mode selected');
+    }
+
+    modeCameraBtn.addEventListener('click', activateCameraMode);
+    modeScannerBtn.addEventListener('click', activateScannerMode);
+    hardResetBtn.addEventListener('click', hardReset);
+
+    startBtn.addEventListener('click', startCamera);
+    stopBtn.addEventListener('click', stopCamera);
+    switchBtn.addEventListener('click', switchCamera);
+    torchBtn.addEventListener('click', toggleTorch);
+    scannerSink.addEventListener('keydown', handleScannerKeydown);
+
+    document.addEventListener('visibilitychange', () => { if (document.hidden) stopCamera(true); });
+    window.addEventListener('beforeunload', stopCamera);
+
+    activateCameraMode();
+    document.getElementById('dbCount').textContent = Object.keys(eanDatabase).length;
+  </script>
+</body>
+</html>
